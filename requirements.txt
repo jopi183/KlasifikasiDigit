@@ -1,10 +1,10 @@
 streamlit>=1.20.0
 numpy>=1.20.0
 joblib>=1.0.0
-Pillow>=9.0.0 # PIL fork
-opencv-python>=4.5.0 # For cv2
-scikit-learn>=1.0.0 # For sklearn.svm, StandardScaler, etc. (check your training version)
-scipy>=1.7.0 # For ndimage, median_filter
-scikit-image>=0.18.0 # For skimage.feature (LBP, HOG)
-matplotlib>=3.4.0 # For plotting histograms and edge difference
-libgl1
+Pillow>=9.0.0
+opencv-python-headless>=4.5.0  # <-- ganti ini
+scikit-learn>=1.0.0
+scipy>=1.7.0
+scikit-image>=0.18.0
+matplotlib>=3.4.0
+pandas>=1.2.0
