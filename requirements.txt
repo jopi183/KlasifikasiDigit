@@ -7,3 +7,4 @@ scikit-learn>=1.0.0 # For sklearn.svm, StandardScaler, etc. (check your training
 scipy>=1.7.0 # For ndimage, median_filter
 scikit-image>=0.18.0 # For skimage.feature (LBP, HOG)
 matplotlib>=3.4.0 # For plotting histograms and edge difference
+libgl1
