@@ -8,10 +8,11 @@ import warnings
 import sklearn
 from sklearn.exceptions import InconsistentVersionWarning
 from scipy import ndimage
-from scipy.ndimage import median_filter
-from skimage.feature import local_binary_pattern, hog
+from skimage.feature import local_binary_pattern
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC 
+from sklearn.decomposition import PCA
+from sklearn.feature_selection import SelectKBest
 import matplotlib.pyplot as plt
 
 # --- Set Streamlit Page Configuration ---
@@ -27,248 +28,227 @@ warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
 # --- Display Scikit-learn Version ---
 st.write(f"Scikit-learn version used by app: {sklearn.__version__}")
 
-# --- SignLanguageClassifier Class Definition ---
-# This class wraps the trained SVM model and its scaler.
-# It MUST be IDENTICAL to the class definition used in your training script
-# when the 'sign_language_model.pkl' file was generated.
-class SignLanguageClassifier:
-    """Custom wrapper class for the sign language classifier."""
-    
-    def __init__(self, svm_model=None, scaler=None): 
-        self.svm_model = svm_model if svm_model is not None else SVC(kernel='rbf', probability=True, random_state=42)
-        self.scaler = scaler if scaler is not None else StandardScaler()
-        self.is_fitted = True 
-
-    def predict(self, X):
-        if not self.is_fitted:
-            raise ValueError("Model not fitted yet. Cannot make predictions.")
-        X_scaled = self.scaler.transform(X)
-        # Access the best estimator from GridSearchCV if svm_model is a GridSearchCV object
-        if hasattr(self.svm_model, 'best_estimator_'):
-            return self.svm_model.best_estimator_.predict(X_scaled)
-        else:
-            return self.svm_model.predict(X_scaled) # Fallback if not GridSearchCV
-    
-    def predict_proba(self, X):
-        if not self.is_fitted:
-            raise ValueError("Model not fitted yet. Cannot predict probabilities.")
-        X_scaled = self.scaler.transform(X)
-        # Access the best estimator from GridSearchCV if svm_model is a GridSearchCV object
-        if hasattr(self.svm_model, 'best_estimator_'):
-            # Check if the best estimator itself has predict_proba
-            if hasattr(self.svm_model.best_estimator_, 'predict_proba'):
-                return self.svm_model.best_estimator_.predict_proba(X_scaled)
-            else:
-                raise AttributeError("Best estimator has no attribute 'predict_proba'. Set probability=True on SVC.")
-        else:
-            # Fallback if not GridSearchCV, check if svm_model itself has predict_proba
-            if hasattr(self.svm_model, 'predict_proba'):
-                return self.svm_model.predict_proba(X_scaled)
-            else:
-                raise AttributeError("Model has no attribute 'predict_proba'. Set probability=True on SVC.")
-    
-    def decision_function(self, X):
-        if not self.is_fitted:
-            raise ValueError("Model not fitted yet. Cannot get decision function scores.") 
-        X_scaled = self.scaler.transform(X)
-        # Access the best estimator from GridSearchCV if svm_model is a GridSearchCV object
-        if hasattr(self.svm_model, 'best_estimator_'):
-            return self.svm_model.best_estimator_.decision_function(X_scaled)
-        else:
-            return self.svm_model.decision_function(X_scaled) # Fallback if not GridSearchCV
-        
-# --- SignLanguagePreprocessor Class Definition ---
-# This class encapsulates the image preprocessing and feature extraction logic.
+# --- SignLanguagePreprocessor Class Definition (FIXED) ---
 class SignLanguagePreprocessor:
     """Preprocessing class consistent with the training pipeline."""
     
     def __init__(self):
-        # No scaler is needed here; the classifier object handles feature scaling.
         pass 
     
-    def gaussian_filter_manual(self, image, sigma=0.5):
-        """Manual implementation of Gaussian filter with mild smoothing."""
-        image = self.normalize_image(image)
-        
-        size = int(2 * np.ceil(2 * sigma) + 1)
-        if size < 3:
-            size = 3
-        
-        x, y = np.mgrid[-size//2 + 1:size//2 + 1, -size//2 + 1:size//2 + 1]
-        kernel = np.exp(-((x**2 + y**2) / (2.0 * sigma**2)))
-        kernel = kernel / kernel.sum()
-        
-        filtered = ndimage.convolve(image.astype(np.float64), kernel, mode='reflect')
-        return np.clip(filtered, 0, 255).astype(np.uint8)
-    
-    def adaptive_contrast_stretching(self, image, min_percentile=0.5, max_percentile=99.5):
-        """Adaptive contrast stretching that preserves details."""
-        image = image.astype(np.float64)
-        
-        p_min = np.percentile(image, min_percentile)
-        p_max = np.percentile(image, max_percentile)
-        
-        if p_max - p_min == 0:
-            return self.normalize_image(image)
-        
-        gamma = 0.8
-        normalized = (image - p_min) / (p_max - p_min)
-        normalized = np.clip(normalized, 0, 1)
-        gamma_corrected = np.power(normalized, gamma)
-        stretched = gamma_corrected * 255
-        
-        return stretched.astype(np.uint8)
-    
-    def unsharp_mask(self, image, amount=0.3, radius=1.0):
-        """Applies unsharp masking to enhance edges."""
-        blurred = self.gaussian_filter_manual(image, sigma=radius)
-        high_pass = image.astype(np.float64) - blurred.astype(np.float64)
-        sharpened = image.astype(np.float64) + amount * high_pass
-        sharpened = np.clip(sharpened, 0, 255)
-        return sharpened.astype(np.uint8)
-    
-    def normalize_image(self, image):
-        """Normalizes image pixel values to the 0-255 range."""
-        image = image.astype(np.float64)
-        img_min, img_max = image.min(), image.max()
-        
-        if img_max - img_min == 0:
-            return np.zeros_like(image, dtype=np.uint8)
-        
-        normalized = (image - img_min) / (img_max - img_min) * 255
-        return normalized.astype(np.uint8)
-    
+    def simple_normalize(self, image):
+        """Simple but effective normalization - EXACTLY from training code"""
+        img = image.astype(np.float32)
+        img = (img - img.min()) / (img.max() - img.min() + 1e-8)
+        return img
+
     def histogram_equalization(self, image):
-        """Performs histogram equalization for contrast enhancement."""
-        image = self.normalize_image(image)
+        """Simple histogram equalization - EXACTLY from training code"""
         hist, bins = np.histogram(image.flatten(), 256, [0, 256])
         cdf = hist.cumsum()
-        cdf_normalized = (cdf - cdf.min()) * 255 / (cdf.max() - cdf.min())
-        cdf_normalized = cdf_normalized.astype(np.uint8)
-        equalized = cdf_normalized[image]
-        return equalized
-    
-    def median_filter_manual(self, image, size=3):
-        """Manual implementation of median filter."""
-        return median_filter(image, size=size)
-    
+        cdf_normalized = cdf * 255 / cdf[-1]
+        equalized = np.interp(image.flatten(), bins[:-1], cdf_normalized)
+        return equalized.reshape(image.shape).astype(np.uint8)
+
+    def apply_gaussian_blur(self, image, sigma=1.0):
+        """Apply Gaussian blur using scipy - EXACTLY from training code"""
+        return ndimage.gaussian_filter(image, sigma=sigma)
+
+    def preprocess_single_image(self, image):
+        """Preprocess a single image - EXACTLY from training code"""
+        original = image.copy()
+        
+        # 1. Simple normalization
+        processed = self.simple_normalize(image)
+        
+        # 2. Histogram equalization for better contrast
+        image_uint8 = (processed * 255).astype(np.uint8)
+        image_eq = self.histogram_equalization(image_uint8)
+        processed = self.simple_normalize(image_eq)
+        
+        # 3. Light Gaussian blur to reduce noise - FIXED: Use sigma=0.8 like training
+        processed = self.apply_gaussian_blur(processed, sigma=0.8)
+        
+        return original, processed
+
     def preprocess_image_with_steps(self, image):
-        """Applies the complete preprocessing pipeline and stores intermediate steps for visualization."""
+        """Applies preprocessing and stores intermediate steps for visualization."""
         # Convert to grayscale if the image is color
         if len(image.shape) == 3:
-            image = np.mean(image, axis=2).astype(np.uint8)
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         
         steps = {}
         steps['original'] = image.copy()
         
-        image_norm = self.normalize_image(image)
-        steps['normalized'] = image_norm.copy()
+        # Use the EXACT same preprocessing as training
+        original, processed = self.preprocess_single_image(image)
         
-        if np.all(image_norm == 0):
-            st.warning("Warning: Empty image detected, using original normalized image for further steps.")
-            return image_norm, steps
+        # Store intermediate steps for visualization
+        img = image.astype(np.float32)
         
-        denoised = self.gaussian_filter_manual(image_norm, sigma=0.3)
-        steps['gaussian_filtered'] = denoised.copy()
+        # Step 1: Simple normalization
+        processed_step1 = self.simple_normalize(image)
+        processed_uint8_1 = (processed_step1 * 255).astype(np.uint8)
+        steps['normalized'] = processed_uint8_1.copy()
         
-        local_var = ndimage.generic_filter(denoised.astype(np.float64), np.var, size=3)
-        noise_threshold = np.percentile(local_var, 85)
-        noise_mask = local_var > noise_threshold
+        # Step 2: Histogram equalization
+        image_eq = self.histogram_equalization(processed_uint8_1)
+        steps['histogram_equalized'] = image_eq.copy()
         
-        median_filtered = self.median_filter_manual(denoised, size=3)
-        denoised = np.where(noise_mask, median_filtered, denoised)
-        steps['selective_median'] = denoised.copy()
+        # Step 3: Second normalization
+        processed_step2 = self.simple_normalize(image_eq)
+        processed_uint8_2 = (processed_step2 * 255).astype(np.uint8)
+        steps['renormalized'] = processed_uint8_2.copy()
         
-        enhanced = self.adaptive_contrast_stretching(denoised, min_percentile=0.5, max_percentile=99.5)
-        steps['contrast_enhanced'] = enhanced.copy()
+        # Step 4: Gaussian blur - FINAL processed image
+        final_processed = self.apply_gaussian_blur(processed_step2, sigma=0.8)
+        final_uint8 = (final_processed * 255).astype(np.uint8)
+        steps['final'] = final_uint8.copy()
         
-        hist_eq_applied = False
-        if enhanced.std() < 30: # Apply histogram equalization only if contrast is low
-            enhanced = self.histogram_equalization(enhanced)
-            hist_eq_applied = True
-        steps['after_hist_eq'] = enhanced.copy()
-        steps['hist_eq_applied'] = hist_eq_applied
-        
-        final_image = self.unsharp_mask(enhanced, amount=0.2, radius=0.8)
-        steps['final'] = final_image.copy()
+        return processed, steps  # Return the actual processed float image
 
-        # Calculate edge difference for visualization
-        edge_difference = final_image.astype(np.float64) - steps['after_hist_eq'].astype(np.float64)
-        steps['edge_difference'] = edge_difference.copy()
+    def extract_pixel_features(self, images):
+        """Extract raw pixel features - EXACTLY from training code"""
+        if len(images.shape) == 2:
+            images = images.reshape(1, *images.shape)
+        n_samples = images.shape[0]
+        flattened = images.reshape(n_samples, -1)
+        return flattened
+
+    def extract_statistical_features(self, images):
+        """Extract statistical features - EXACTLY from training code"""
+        if len(images.shape) == 2:
+            images = images.reshape(1, *images.shape)
         
-        return final_image.astype(np.uint8), steps
-    
-    def preprocess_image(self, image):
-        """Applies the complete preprocessing pipeline (returns final result only)."""
-        final_image, _ = self.preprocess_image_with_steps(image)
-        return final_image
-    
-    def extract_hog_features(self, image):
-        """Extracts HOG features from an image."""
-        features = hog(image, 
-                       orientations=9,
-                       pixels_per_cell=(8, 8),
-                       cells_per_block=(2, 2),
-                       block_norm='L2-Hys',
-                       visualize=False,
-                       transform_sqrt=True)
-        return features
-    
-    def extract_lbp_features(self, image):
-        """Extracts LBP features from an image."""
-        radius = 3
+        features = []
+        n_samples = images.shape[0]
+        
+        for i in range(n_samples):
+            img = images[i]
+            
+            # Basic statistics
+            feat = [
+                np.mean(img), np.std(img), np.var(img),
+                np.min(img), np.max(img), np.median(img),
+                np.percentile(img, 25), np.percentile(img, 75),
+            ]
+            
+            # Histogram features
+            hist, _ = np.histogram(img, bins=16, range=(0, 1))
+            hist = hist / np.sum(hist)
+            feat.extend(hist)
+            
+            # Moments
+            feat.extend([
+                np.mean(img**2),  # Second moment
+                np.mean((img - np.mean(img))**3) / (np.std(img)**3 + 1e-8),  # Skewness
+                np.mean((img - np.mean(img))**4) / (np.std(img)**4 + 1e-8) - 3,  # Kurtosis
+            ])
+            
+            features.append(feat)
+        
+        return np.array(features)
+
+    def extract_gradient_features(self, images):
+        """Extract gradient features - EXACTLY from training code"""
+        if len(images.shape) == 2:
+            images = images.reshape(1, *images.shape)
+        
+        features = []
+        n_samples = images.shape[0]
+        
+        for i in range(n_samples):
+            img = images[i]
+            
+            # Sobel gradients
+            grad_x = ndimage.sobel(img, axis=1)
+            grad_y = ndimage.sobel(img, axis=0)
+            magnitude = np.sqrt(grad_x**2 + grad_y**2)
+            
+            feat = [
+                np.mean(magnitude), np.std(magnitude),
+                np.max(magnitude),
+                np.sum(magnitude > np.mean(magnitude)) / magnitude.size,
+            ]
+            
+            features.append(feat)
+        
+        return np.array(features)
+
+    def extract_texture_features(self, images):
+        """Extract texture features using LBP - EXACTLY from training code"""
+        if len(images.shape) == 2:
+            images = images.reshape(1, *images.shape)
+        
+        features = []
+        n_samples = images.shape[0]
+        
+        radius = 1
         n_points = 8 * radius
         
-        lbp = local_binary_pattern(image, n_points, radius, method='uniform')
-        
-        n_bins = n_points + 2
-        hist, _ = np.histogram(lbp.ravel(), bins=n_bins, range=(0, n_bins))
-        hist = hist.astype(float)
-        hist /= (hist.sum() + 1e-7) # Add epsilon to prevent division by zero
-        
-        return hist
-    
-    def extract_features(self, image, feature_type='combined'):
-        """Extracts features (HOG, LBP, or combined) from a single image."""
-        processed_img, preprocessing_steps = self.preprocess_image_with_steps(image)
-        
-        # Fallback if preprocessing results in a black image
-        if processed_img.max() == 0:
-            st.warning("Warning: Processed image is completely black. Attempting feature extraction on original normalized image.")
-            if len(image.shape) == 3:
-                processed_img = np.mean(image, axis=2).astype(np.uint8)
-            else:
-                processed_img = image.copy()
-            processed_img = self.normalize_image(processed_img) # Re-normalize if needed
-        
-        try:
-            if feature_type == 'hog':
-                features = self.extract_hog_features(processed_img)
-            elif feature_type == 'lbp':
-                features = self.extract_lbp_features(processed_img)
-            elif feature_type == 'combined':
-                hog_features = self.extract_hog_features(processed_img)
-                lbp_features = self.extract_lbp_features(processed_img)
-                features = np.concatenate([hog_features, lbp_features])
+        for i in range(n_samples):
+            img = images[i]
+            img_uint8 = (img * 255).astype(np.uint8)
             
-            # Handle potential NaN or Inf values in features
-            if np.any(np.isnan(features)) or np.any(np.isinf(features)):
-                st.warning("Warning: Invalid features detected (NaN/Inf). Replacing with zeros/finite numbers.")
-                features = np.nan_to_num(features)
+            # Local Binary Pattern
+            lbp = local_binary_pattern(img_uint8, n_points, radius, method='uniform')
+            
+            # LBP histogram
+            n_bins = n_points + 2
+            lbp_hist, _ = np.histogram(lbp, bins=n_bins, range=(0, n_bins))
+            lbp_hist = lbp_hist / np.sum(lbp_hist)
+            
+            features.append(lbp_hist)
+        
+        return np.array(features)
+
+    def extract_comprehensive_features(self, images):
+        """Extract all features and combine them - EXACTLY from training code"""
+        pixel_feat = self.extract_pixel_features(images)
+        stat_feat = self.extract_statistical_features(images)
+        grad_feat = self.extract_gradient_features(images)
+        texture_feat = self.extract_texture_features(images)
+        
+        st.write(f"Debug - Feature shapes:")
+        st.write(f"  Pixel features: {pixel_feat.shape}")
+        st.write(f"  Statistical features: {stat_feat.shape}")
+        st.write(f"  Gradient features: {grad_feat.shape}")
+        st.write(f"  Texture features: {texture_feat.shape}")
+        
+        # Combine all features
+        all_features = np.hstack([pixel_feat, stat_feat, grad_feat, texture_feat])
+        
+        # Handle NaN values
+        nan_mask = np.isnan(all_features)
+        if np.any(nan_mask):
+            st.warning(f"Found {np.sum(nan_mask)} NaN values, replacing with 0")
+            all_features[nan_mask] = 0
+        
+        st.write(f"Combined features shape: {all_features.shape}")
+        
+        return all_features
+
+    def extract_features(self, image):
+        """Extract comprehensive features from a single image"""
+        try:
+            # Preprocess the image using EXACT same method as training
+            processed_img, preprocessing_steps = self.preprocess_image_with_steps(image)
+            
+            # Extract comprehensive features from the processed image
+            features = self.extract_comprehensive_features(processed_img)
+            
+            # Ensure features are properly shaped for single image
+            if len(features.shape) > 1:
+                features = features.flatten()
             
             return processed_img, features, preprocessing_steps
             
         except Exception as e:
             st.error(f"Error during feature extraction: {str(e)}")
-            # Provide fallback zero features in case of extraction failure
-            if feature_type == 'hog':
-                features = np.zeros(324) # Default HOG feature size
-            elif feature_type == 'lbp':
-                features = np.zeros(26) # Default LBP feature size
-            else:
-                features = np.zeros(350) # Combined (HOG 324 + LBP 26)
-            
-            return processed_img, features, preprocessing_steps
+            import traceback
+            st.error(f"Traceback: {traceback.format_exc()}")
+            # Provide fallback zero features
+            features = np.zeros(4096 + 27 + 4 + 10)
+            return processed_img if 'processed_img' in locals() else image, features, {}
 
 # --- Cached Functions for Resource Loading ---
 @st.cache_resource
@@ -277,83 +257,161 @@ def get_preprocessor():
     return SignLanguagePreprocessor()
 
 @st.cache_resource
-def load_full_classifier(path):
-    """
-    Loads the complete SignLanguageClassifier object from a joblib-exported file.
-    This object includes the trained SVM model and its fitted StandardScaler.
-    """
+def load_model_components(path):
+    """Loads the model components from the training script format."""
     try:
-        with open(path, 'rb') as f:
-            classifier_obj = joblib.load(f) # Using joblib.load
+        model_data = joblib.load(path)
         
-        # Crucial fix: Ensure the loaded object has the 'is_fitted' attribute
-        # This covers cases where the training script didn't explicitly save it.
-        if not hasattr(classifier_obj, 'is_fitted'):
-            classifier_obj.is_fitted = True 
+        # Extract components with validation
+        required_keys = ['svm_model', 'scaler', 'pca', 'selector', 'accuracy']
+        for key in required_keys:
+            if key not in model_data:
+                st.error(f"Missing required component: {key}")
+                st.stop()
         
-        st.success("✅ Classifier berhasil dimuat!")
-        return classifier_obj
+        svm_model = model_data['svm_model']
+        scaler = model_data['scaler']
+        pca = model_data['pca']
+        selector = model_data['selector']
+        accuracy = model_data['accuracy']
+        model_info = model_data.get('model_info', {})
+        
+        st.success("✅ Model berhasil dimuat!")
+        st.info(f"📊 Model accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
+        
+        # Display additional model info
+        if hasattr(svm_model, 'n_support_'):
+            st.info(f"🔧 Support vectors: {np.sum(svm_model.n_support_)}")
+        if hasattr(pca, 'explained_variance_ratio_'):
+            st.info(f"📈 PCA variance explained: {np.sum(pca.explained_variance_ratio_):.3f}")
+        
+        return svm_model, scaler, pca, selector, accuracy, model_info
+        
     except FileNotFoundError:
-        st.error(f"❌ File classifier '{path}' tidak ditemukan!")
-        st.info(f"💡 Pastikan file '{path}' ada di direktori yang sama dengan app.py.")
-        st.stop() # Stop the app execution if model file is not found
+        st.error(f"File model '{path}' tidak ditemukan!")
+        st.info(f"Pastikan file '{path}' ada di direktori yang sama dengan app.py.")
+        st.stop()
     except Exception as e:
-        st.error(f"❌ Error saat memuat classifier: {e}")
-        st.info("💡 Pastikan Anda mengekspor model dengan joblib.dump(classifier, 'filename.pkl') dan definisi kelas di app.py sama persis dengan saat model dilatih.")
-        st.stop() # Stop the app execution on other loading errors
+        st.error(f"Error saat memuat model: {e}")
+        st.info("Pastikan Anda menggunakan model yang dilatih dengan script training yang benar.")
+        st.stop()
 
-# --- Visualization Function ---
+def predict_with_model(svm_model, scaler, pca, selector, features):
+    """Make prediction using the loaded model components - FIXED"""
+    try:
+        # Validate input features
+        if len(features.shape) == 1:
+            features = features.reshape(1, -1)
+        
+        st.write(f"Debug - Prediction pipeline:")
+        st.write(f"  Input features shape: {features.shape}")
+        st.write(f"  Input features range: [{np.min(features):.6f}, {np.max(features):.6f}]")
+        
+        # Apply PCA
+        features_pca = pca.transform(features)
+        st.write(f"  After PCA: {features_pca.shape}")
+        st.write(f"  PCA features range: [{np.min(features_pca):.6f}, {np.max(features_pca):.6f}]")
+        
+        # Apply feature selection
+        features_selected = selector.transform(features_pca)
+        st.write(f"  After feature selection: {features_selected.shape}")
+        st.write(f"  Selected features range: [{np.min(features_selected):.6f}, {np.max(features_selected):.6f}]")
+        
+        # Scale features
+        features_scaled = scaler.transform(features_selected)
+        st.write(f"  After scaling: {features_scaled.shape}")
+        st.write(f"  Scaled features range: [{np.min(features_scaled):.6f}, {np.max(features_scaled):.6f}]")
+        
+        # Make prediction
+        prediction = svm_model.predict(features_scaled)[0]
+        
+        # Get probabilities if available
+        confidence = None
+        probability = None
+        
+        if hasattr(svm_model, 'predict_proba'):
+            try:
+                proba = svm_model.predict_proba(features_scaled)[0]
+                probability = np.max(proba)
+                confidence = probability
+                st.write(f"  Probabilities: {proba}")
+                st.write(f"  Max probability: {probability}")
+            except:
+                st.write("  Probabilities not available")
+        
+        # Get decision function scores for additional confidence
+        if hasattr(svm_model, 'decision_function'):
+            try:
+                decision_scores = svm_model.decision_function(features_scaled)
+                if len(decision_scores.shape) > 1:
+                    decision_scores = decision_scores[0]
+                st.write(f"  Decision scores: {decision_scores}")
+                if confidence is None:
+                    confidence = np.max(np.abs(decision_scores))
+            except:
+                st.write("  Decision function not available")
+        
+        st.write(f"  Final prediction: {prediction}")
+        
+        return prediction, confidence, probability
+        
+    except Exception as e:
+        st.error(f"Error during prediction: {str(e)}")
+        import traceback
+        st.error(f"Traceback: {traceback.format_exc()}")
+        return None, None, None
+
+# --- Enhanced Visualization Function ---
 def visualize_preprocessing_steps(preprocessing_steps):
     """Displays the various image preprocessing steps in Streamlit."""
     st.subheader("🔬 Tahapan Preprocessing Gambar")
     
     # Row 1 of images
-    cols_row1 = st.columns(3)
+    cols_row1 = st.columns(2)
     with cols_row1[0]:
         st.image(preprocessing_steps['original'], caption="1. Gambar Asli", use_column_width=True, clamp=True)
     with cols_row1[1]:
-        st.image(preprocessing_steps['normalized'], caption="2. Normalisasi Pixel", use_column_width=True, clamp=True)
-    with cols_row1[2]:
-        st.image(preprocessing_steps['gaussian_filtered'], caption="3. Gaussian Filter (σ=0.3)", use_column_width=True, clamp=True)
+        st.image(preprocessing_steps['normalized'], caption="2. Normalisasi Awal", use_column_width=True, clamp=True)
     
     # Row 2 of images
-    cols_row2 = st.columns(3)
+    cols_row2 = st.columns(2)
     with cols_row2[0]:
-        st.image(preprocessing_steps['selective_median'], caption="4. Median Filter Selektif", use_column_width=True, clamp=True)
+        st.image(preprocessing_steps['histogram_equalized'], caption="3. Histogram Equalization", use_column_width=True, clamp=True)
     with cols_row2[1]:
-        st.image(preprocessing_steps['contrast_enhanced'], caption="5. Peningkatan Kontras Adaptif", use_column_width=True, clamp=True)
-    with cols_row2[2]:
-        hist_eq_text = "6. Final & Peningkatan Tepi"
-        if preprocessing_steps['hist_eq_applied']:
-            hist_eq_text += " (+ Hist. Eq.)"
-        st.image(preprocessing_steps['final'], caption=hist_eq_text, use_column_width=True, clamp=True)
+        st.image(preprocessing_steps['final'], caption="4. Final (Gaussian Blur)", use_column_width=True, clamp=True)
     
-    # Add Edge Enhancement Difference Map using Matplotlib
+    # Enhanced histogram comparison
     st.markdown("---")
-    st.subheader("⚡ Efek Peningkatan Tepi")
-    fig_edge_diff, ax_edge_diff = plt.subplots(figsize=(8, 6))
-    im = ax_edge_diff.imshow(preprocessing_steps['edge_difference'], cmap='RdBu_r', vmin=-50, vmax=50) # Adjust vmin/vmax as needed
-    ax_edge_diff.set_title("Perbedaan Piksel setelah Peningkatan Tepi (Unsharp Masking)")
-    ax_edge_diff.axis('off')
-    fig_edge_diff.colorbar(im, ax=ax_edge_diff, label='Perbedaan Intensitas Piksel')
-    st.pyplot(fig_edge_diff)
-    plt.close(fig_edge_diff) # Close the figure to free up memory
-
-    # Plotting histograms for comparison
-    fig_hist, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+    st.subheader("📊 Perbandingan Histogram")
     
-    ax1.hist(preprocessing_steps['original'].flatten(), bins=50, alpha=0.7, color='blue')
-    ax1.set_title('Histogram Gambar Asli')
-    ax1.set_xlabel('Intensitas Piksel')
-    ax1.set_ylabel('Frekuensi')
+    fig_hist, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 8))
     
-    ax2.hist(preprocessing_steps['final'].flatten(), bins=50, alpha=0.7, color='red')
-    ax2.set_title('Histogram Gambar Akhir yang Diproses')
-    ax2.set_xlabel('Intensitas Piksel')
-    ax2.set_ylabel('Frekuensi')
+    # Calculate statistics for each step
+    steps_data = [
+        ('Gambar Asli', preprocessing_steps['original'], 'blue'),
+        ('Setelah Normalisasi', preprocessing_steps['normalized'], 'green'),
+        ('Setelah Equalization', preprocessing_steps['histogram_equalized'], 'orange'),
+        ('Gambar Akhir', preprocessing_steps['final'], 'red')
+    ]
     
+    axes = [ax1, ax2, ax3, ax4]
+    
+    for i, (title, img, color) in enumerate(steps_data):
+        axes[i].hist(img.flatten(), bins=50, alpha=0.7, color=color)
+        axes[i].set_title(f'Histogram {title}')
+        axes[i].set_xlabel('Intensitas Piksel')
+        axes[i].set_ylabel('Frekuensi')
+        
+        # Add statistics text
+        mean_val = np.mean(img)
+        std_val = np.std(img)
+        axes[i].text(0.02, 0.98, f'μ={mean_val:.1f}\nσ={std_val:.1f}', 
+                     transform=axes[i].transAxes, verticalalignment='top',
+                     bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    plt.tight_layout()
     st.pyplot(fig_hist)
-    plt.close(fig_hist) # Close the figure to free up memory
+    plt.close(fig_hist)
 
 # --- Custom CSS Styling ---
 st.markdown("""
@@ -368,12 +426,14 @@ border-left: 4px solid #2196F3; margin-bottom: 20px;}
 .method-box {background-color: #fff3cd; padding: 10px; border-radius: 5px;
 border-left: 3px solid #ffc107; margin: 10px 0;}
 .stats-box {background-color: #f8f9fa; padding: 10px; border-radius: 5px; margin: 5px 0;}
+.warning-box {background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 10px 0;}
+.success-box {background-color: #d4edda; border-left: 4px solid #28a745; padding: 10px; margin: 10px 0;}
 </style>
 """, unsafe_allow_html=True)
 
 # --- Main Streamlit Application Logic ---
 def main():
-    # Initialize the preprocessor (for image manipulation and feature extraction)
+    # Initialize the preprocessor
     preprocessor = get_preprocessor()
 
     # Application Title and Information
@@ -383,33 +443,35 @@ def main():
     <div class='info-box'>
         <strong>🚀 Cara Penggunaan:</strong><br>
         1. Pilih sumber gambar (unggah dari perangkat atau ambil langsung dengan kamera web).<br>
-        2. Pilih tipe fitur yang ingin digunakan untuk analisis gambar.<br>
-        3. Pastikan gambar tangan Anda menunjukkan angka (0-9) dengan jelas.<br>
-        4. Aplikasi akan secara otomatis menampilkan hasil klasifikasi dan tahapan pemrosesan gambar.<br><br>
-        <strong>⚡ Teknologi:</strong> Model SVM (Support Vector Machine) dengan ekstraksi fitur HOG (Histogram of Oriented Gradients) dan LBP (Local Binary Pattern) yang dikombinasikan, didukung oleh pipeline preprocessing gambar yang menjaga detail tepi dan meningkatkan kontras secara adaptif.
+        2. Pastikan gambar tangan Anda menunjukkan angka (0-9) dengan jelas.<br>
+        3. Aplikasi akan secara otomatis menampilkan hasil klasifikasi dan tahapan pemrosesan gambar.<br><br>
+        <strong>⚡ Teknologi:</strong> Model SVM (Support Vector Machine) dengan ekstraksi fitur komprehensif (Pixel + Statistical + Gradient + Texture) yang dikombinasikan dengan PCA dan feature selection, didukung oleh pipeline preprocessing yang terdiri dari normalisasi, histogram equalization, dan Gaussian blur.
     </div>
     """, unsafe_allow_html=True)
 
-    # Feature Type Selection
-    st.markdown("<div class='method-box'><strong>🔧 Pilih Tipe Fitur:</strong></div>", unsafe_allow_html=True)
-    feature_type = st.selectbox(
-        "Tipe Fitur untuk Ekstraksi:",
-        options=['combined', 'hog', 'lbp'],
-        index=0, # Default ke 'combined'
-        help="Gabungan (Combined): Mengombinasikan HOG dan LBP untuk akurasi yang lebih baik. HOG: Fokus pada bentuk dan kontur. LBP: Fokus pada tekstur dan pola lokal."
-    )
+    # Load the model components
+    model_filename = 'hand_sign_svm_model.pkl'  # Default filename from training script
+    svm_model, scaler, pca, selector, accuracy, model_info = load_model_components(model_filename)
 
-    feature_info = {
-        'combined': "🔥 **Fitur Gabungan (HOG + LBP)**: Metode paling kuat, menggabungkan informasi bentuk dan tekstur untuk akurasi maksimal.",
-        'hog': "📊 **Fitur HOG**: Histogram of Oriented Gradients - efektif untuk menangkap bentuk dan kontur utama tangan.",
-        'lbp': "🔍 **Fitur LBP**: Local Binary Pattern - baik untuk mendeskripsikan tekstur dan pola halus pada gambar."
-    }
-    st.info(feature_info[feature_type])
+    # Display model information
+    st.markdown("<div class='method-box'><strong>🔧 Informasi Model:</strong></div>", unsafe_allow_html=True)
+    if model_info:
+        st.info(f"📊 **Model Type**: {model_info.get('type', 'SVM with RBF kernel')}")
+        st.info(f"🔧 **Preprocessing**: {model_info.get('preprocessing', 'Normalization + Histogram Equalization + Gaussian Blur')}")
+        st.info(f"🎯 **Features**: {model_info.get('features', 'Pixel + Statistical + Gradient + Texture')}")
+        st.info(f"📈 **Dimensionality Reduction**: {model_info.get('dimensionality_reduction', 'PCA + Feature Selection')}")
 
-    # --- Load the classifier dynamically based on selected feature type ---
-    # This is the key change to match your training script's output
-    model_filename = f'sign_language_model_{feature_type}.pkl'
-    classifier = load_full_classifier(model_filename) 
+    # Quality recommendations
+    st.markdown("""
+    <div class='warning-box'>
+        <strong>💡 Tips untuk Hasil Terbaik:</strong><br>
+        • Gunakan latar belakang yang kontras dengan tangan<br>
+        • Pastikan pencahayaan yang cukup dan merata<br>
+        • Posisikan tangan di tengah frame<br>
+        • Hindari bayangan yang mengaburkan bentuk tangan<br>
+        • Pastikan gesture angka terlihat jelas dan tidak terpotong
+    </div>
+    """, unsafe_allow_html=True)
 
     # Image Source Selection: Upload or Camera Input
     choice = st.radio("📸 Pilih sumber gambar untuk klasifikasi:", ("Unggah Gambar", "Ambil Gambar dari Kamera"))
@@ -418,11 +480,10 @@ def main():
     if choice == "Unggah Gambar":
         uploaded_file = st.file_uploader("Unggah file gambar (JPG atau PNG):", type=["jpg", "jpeg", "png"])
         if uploaded_file is not None:
-            image_data = Image.open(uploaded_file).convert("RGB") # Ensure RGB for consistent processing
-    else: # choice == "Ambil Gambar dari Kamera"
+            image_data = Image.open(uploaded_file).convert("RGB")
+    else:
         camera_image = st.camera_input("Ambil Gambar dari Kamera")
         if camera_image is not None:
-            # Read bytes from camera_image and convert to PIL Image
             image_data = Image.open(io.BytesIO(camera_image.read())).convert("RGB")
 
     # Process and display results if an image has been provided
@@ -442,12 +503,12 @@ def main():
             st.image(image_resized, caption="Gambar Diresize (64x64 pixels)", use_column_width=True)
 
         # Perform preprocessing and feature extraction
-        with st.spinner(f'⚙️ Memproses gambar dan mengekstraksi {feature_type.upper()} features...'):
-            # Pass the selected feature_type to the preprocessor
-            processed_img, features, preprocessing_steps = preprocessor.extract_features(image_resized, feature_type=feature_type)
+        with st.spinner('⚙️ Memproses gambar dan mengekstraksi features...'):
+            processed_img, features, preprocessing_steps = preprocessor.extract_features(image_resized)
 
         # Visualize preprocessing steps
-        visualize_preprocessing_steps(preprocessing_steps)
+        if preprocessing_steps:
+            visualize_preprocessing_steps(preprocessing_steps)
 
         # Display processing information
         st.markdown("---")
@@ -459,114 +520,113 @@ def main():
         with col4:
             st.metric("Jumlah Fitur", f"{features.shape[0]}")
         with col5:
-            # Evaluate preprocessing quality based on standard deviation
-            preprocessing_quality = processed_img.std() / 255.0 * 100
+            preprocessing_quality = processed_img.std() * 100 if hasattr(processed_img, 'std') else 0
             st.metric("Kualitas Pemrosesan (Std. Dev.)", f"{preprocessing_quality:.1f}%")
         with col6:
-            # Calculate contrast improvement
-            original_gray_std = np.mean(image_resized, axis=2).std() # Ensure grayscale for std calculation
-            contrast_improvement = (processed_img.std() - original_gray_std) / (original_gray_std + 1e-7) * 100
+            original_gray = cv2.cvtColor(image_resized, cv2.COLOR_RGB2GRAY)
+            processed_std = processed_img.std() if hasattr(processed_img, 'std') else 0
+            original_std = original_gray.std() if hasattr(original_gray, 'std') else 1
+            contrast_improvement = (processed_std - original_std) / (original_std + 1e-7) * 100
             st.metric("Peningkatan Kontras", f"{contrast_improvement:+.1f}%")
+
+        # Feature analysis
+        st.markdown("---")
+        st.subheader("🔍 Analisis Fitur")
+        
+        # Check if we have enough features
+        expected_features = 4096 + 27 + 4 + 10  # pixel + statistical + gradient + texture
+        if len(features) < expected_features:
+            st.error(f"❌ Jumlah fitur tidak sesuai! Expected: {expected_features}, Got: {len(features)}")
+        else:
+            col7, col8, col9, col10 = st.columns(4)
+            
+            with col7:
+                pixel_features = features[:4096]
+                st.metric("Pixel Features", f"Mean: {np.mean(pixel_features):.3f}")
+            with col8:
+                stat_features = features[4096:4096+27]
+                st.metric("Statistical Features", f"Range: {np.ptp(stat_features):.3f}")
+            with col9:
+                grad_features = features[4096+27:4096+27+4]
+                st.metric("Gradient Features", f"Max: {np.max(grad_features):.3f}")
+            with col10:
+                texture_features = features[4096+27+4:]
+                st.metric("Texture Features", f"Sum: {np.sum(texture_features):.3f}")
 
         # Perform prediction and display results
         st.markdown("---")
         st.subheader("🎯 Hasil Prediksi")
         
-        try:
-            # Use the loaded 'classifier' object for all prediction-related methods
-            prediction = classifier.predict([features])[0]
-            
-            probabilities = None
-            if hasattr(classifier, 'predict_proba'): 
-                probabilities = classifier.predict_proba([features])[0]
-            
-            confidence = None
-            if hasattr(classifier, 'decision_function'):
-                decision_scores = classifier.decision_function([features])[0]
-                confidence = np.max(decision_scores)
-            
-            if probabilities is not None:
-                # Get top 3 predicted classes and their probabilities
-                top_3_indices = np.argsort(probabilities)[-3:][::-1]
-                
-                confidence_text = f"Skor Keyakinan (Decision Function): {confidence:.3f}" if confidence is not None else "Probabilitas tidak tersedia."
-                st.markdown(f"""
-                <div class='prediction-box'>
-                    <p class='prediction-text'>Prediksi Angka: <span style='color: #E91E63;'>{prediction}</span></p>
-                    <p style='text-align: center; color: #666; font-size: 1.2em;'>
-                        {confidence_text}
-                    </p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                st.subheader("🏆 Top 3 Prediksi Teratas:")
-                for i, idx in enumerate(top_3_indices):
-                    prob_percent = probabilities[idx] * 100
-                    col_pred1, col_pred2 = st.columns([1, 3])
-                    with col_pred1:
-                        st.write(f"**{i+1}. Angka {idx}**")
-                    with col_pred2:
-                        st.progress(prob_percent/100)
-                        st.write(f"{prob_percent:.1f}%")
+        prediction, confidence, probability = predict_with_model(svm_model, scaler, pca, selector, features)
+        
+        if prediction is not None:
+            # Create confidence level
+            if confidence is not None:
+                if confidence > 0.8:
+                    conf_level = "Sangat Tinggi"
+                    conf_color = "#28a745"
+                elif confidence > 0.6:
+                    conf_level = "Tinggi"
+                    conf_color = "#28a745"
+                elif confidence > 0.4:
+                    conf_level = "Sedang"
+                    conf_color = "#ffc107"
+                else:
+                    conf_level = "Rendah"
+                    conf_color = "#dc3545"
             else:
-                confidence_text = f"Skor Keyakinan (Decision Function): {confidence:.3f}" if confidence is not None else "Probabilitas tidak tersedia."
-                st.markdown(f"""
-                <div class='prediction-box'>
-                    <p class='prediction-text'>Prediksi Angka: <span style='color: #E91E63;'>{prediction}</span></p>
-                    <p style='text-align: center; color: #666; font-size: 1.2em;'>
-                        {confidence_text}
-                    </p>
-                </div>
-                """, unsafe_allow_html=True)
-                
+                conf_level = "Tidak tersedia"
+                conf_color = "#6c757d"
+            
+            confidence_text = f"Skor Keyakinan: {confidence:.3f} ({conf_level})" if confidence is not None else "Confidence score tidak tersedia."
+            probability_text = f"Probabilitas: {probability:.3f}" if probability is not None else ""
+            
+            st.markdown(f"""
+            <div class='prediction-box'>
+                <p class='prediction-text'>Prediksi Angka: <span style='color: #E91E63;'>{prediction}</span></p>
+                <p style='text-align: center; color: {conf_color}; font-size: 1.2em; font-weight: bold;'>
+                    {confidence_text}
+                </p>
+                {f"<p style='text-align: center; color: #666; font-size: 1.1em;'>{probability_text}</p>" if probability_text else ""}
+            </div>
+            """, unsafe_allow_html=True)
+            
             # Expandable section for detailed pipeline information
             with st.expander("🔍 Detail Pipeline Pemrosesan"):
-                st.markdown(f"""
+                st.markdown("""
                 **Tahapan Pipeline yang Diterapkan:**
                 1. ✅ **Resizing Gambar:** Gambar diubah ukurannya menjadi 64x64 piksel untuk konsistensi.
-                2. ✅ **Konversi Grayscale:** Gambar dikonversi ke skala abu-abu untuk pemrosesan fitur.
-                3. ✅ **Normalisasi Nilai Piksel:** Nilai piksel dinormalisasi ke rentang 0-255.
-                4. ✅ **Reduksi Derau (Gaussian):** Filter Gaussian ringan (sigma=0.3) diterapkan untuk mengurangi derau dengan tetap menjaga tepi.
-                5. ✅ **Filter Median Selektif:** Filter median diterapkan secara selektif pada area yang mungkin mengandung derau impuls.
-                6. ✅ **Peningkatan Kontras Adaptif:** Kontras gambar ditingkatkan secara adaptif menggunakan peregangan persentil dan koreksi gamma.
-                7. ✅ **Ekualisasi Histogram Kondisional:** Ekualisasi histogram diterapkan jika kontras gambar setelah peningkatan adaptif masih rendah.
-                8. ✅ **Peningkatan Tepi (Unsharp Masking):** Detail tepi diasah menggunakan teknik unsharp masking.
-                9. ✅ **Ekstraksi Fitur:** Fitur {feature_type.upper()} diekstrak dari gambar yang telah diproses.
-                10. ✅ **Scaling Fitur & Prediksi SVM:** Fitur diskalakan menggunakan StandardScaler yang dilatih dan digunakan untuk prediksi oleh model SVM.
+                2. ✅ **Konversi Grayscale:** Gambar dikonversi ke skala abu-abu menggunakan OpenCV.
+                3. ✅ **Normalisasi Awal:** Nilai piksel dinormalisasi ke rentang 0-1.
+                4. ✅ **Histogram Equalization:** Kontras gambar ditingkatkan menggunakan histogram equalization.
+                5. ✅ **Normalisasi Kedua:** Nilai piksel dinormalisasi kembali setelah histogram equalization.
+                6. ✅ **Gaussian Blur:** Filter Gaussian (sigma=0.8) diterapkan untuk mengurangi noise.
+                7. ✅ **Ekstraksi Fitur Komprehensif:** 
+                   - Pixel features: Raw pixel values (4096 features)
+                   - Statistical features: Mean, std,
+                   - Gradient features: Sobel gradients magnitude statistics (4 features)
+                   - Texture features: Local Binary Pattern (LBP) histogram (10 features)
+                8. ✅ **PCA:** Dimensionality reduction dengan Principal Component Analysis.
+                9. ✅ **Feature Selection:** Seleksi fitur terbaik menggunakan SelectKBest.
+                10. ✅ **Scaling & Prediksi:** Fitur diskalakan dan digunakan untuk prediksi SVM.
                 """)
                 
-                st.markdown("**Statistik Detail Gambar (Min/Max/Mean/Std. Dev.):**")
-                stats_data = {
-                    "Gambar Asli (Setelah Resize)": preprocessing_steps['original'],
-                    "Gambar Akhir yang Diproses": preprocessing_steps['final'],
-                    "Perbedaan Peningkatan Tepi": preprocessing_steps['edge_difference']
-                }
-                
-                for name, img in stats_data.items():
-                    # Handle display for edge_difference specifically for proper range
-                    if name == "Perbedaan Peningkatan Tepi":
+                st.markdown("**Statistik Detail Gambar:**")
+                if preprocessing_steps:
+                    stats_data = {
+                        "Gambar Asli (Setelah Resize)": preprocessing_steps.get('original', processed_img),
+                        "Setelah Normalisasi": preprocessing_steps.get('normalized', processed_img),
+                        "Setelah Histogram Equalization": preprocessing_steps.get('histogram_equalized', processed_img),
+                        "Gambar Akhir (Setelah Gaussian Blur)": preprocessing_steps.get('final', processed_img)
+                    }
+                    
+                    for name, img in stats_data.items():
                         st.markdown(f"""
                         <div class='stats-box'>
                         <strong>{name}:</strong> Min={img.min():.2f}, Max={img.max():.2f}, 
-                        Mean={img.mean():.2f}, Std={img.std():.2f} (Range: -255 to 255)
+                        Mean={img.mean():.2f}, Std={img.std():.2f}
                         </div>
                         """, unsafe_allow_html=True)
-                    else:
-                        st.markdown(f"""
-                        <div class='stats-box'>
-                        <strong>{name}:</strong> Min={img.min():.2f}, Max={img.max():.2f}, 
-                        Mean={img.mean():.2f}, Std={img.std():.2f} (Range: 0 to 255)
-                        </div>
-                        """, unsafe_allow_html=True)
-                
-        except Exception as e:
-            st.error(f"❌ Terjadi kesalahan saat melakukan prediksi: {str(e)}")
-            st.write("**Informasi Debug:**")
-            st.write(f"- Bentuk fitur yang diekstraksi: {features.shape}")
-            st.write(f"- Tipe fitur: {type(features)}")
-            st.write(f"- Rentang nilai fitur: {features.min():.4f} - {features.max():.4f}")
-            st.write(f"- Tipe model SVM internal: {type(classifier.svm_model)}") 
-            st.write(f"- Tipe scaler internal: {type(classifier.scaler)}")
 
 
 if __name__ == "__main__":
